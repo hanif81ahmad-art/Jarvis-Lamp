@@ -463,14 +463,14 @@
         }
         gestureStatus.textContent = `Terdeteksi ${detected} jari. Tahan sebentar… (${Math.min(stableFrames, 6)}/6)`;
         if (stableFrames >= 6 && lastAppliedGesture !== detected && !processingGesture) {
-          const next = [false, false, false];
-          next[detected - 1] = true;
+          const next = [...lights];
+          next[detected - 1] = !next[detected - 1];
           processingGesture = true;
           gestureStatus.textContent = `${detected} jari terdeteksi. Mengirim perintah ke ThingSpeak…`;
           const ok = await applyLights(next, `Gestur ${detected} jari`);
           if (ok) {
             lastAppliedGesture = detected;
-            gestureStatus.textContent = `Berhasil! Lampu ${detected} menyala melalui gestur tangan.`;
+            gestureStatus.textContent = `Berhasil! Lampu ${detected} ${lights[detected - 1] ? 'menyala' : 'mati'}. Ulangi gestur setelah melepas tangan untuk mengubahnya lagi.`;
           } else {
             gestureStatus.textContent = 'Gestur terdeteksi, tetapi perintah gagal dikirim. Periksa API Key ThingSpeak.';
           }
@@ -479,7 +479,9 @@
       } else {
         stableGesture = -1;
         stableFrames = 0;
-        if (detected === 0) gestureStatus.textContent = 'Kepalan/0 jari terdeteksi. Lampu tidak diubah.';
+        // Lepaskan gestur (atau tunjukkan jumlah jari lain) sebelum mengulang gestur yang sama.
+        lastAppliedGesture = -1;
+        if (detected === 0) gestureStatus.textContent = 'Gestur dilepas. Tunjukkan lagi 1, 2, atau 3 jari untuk mengubah lampu.';
         else gestureStatus.textContent = 'Arahkan tangan ke kamera dan tunjukkan 1, 2, atau 3 jari.';
       }
     }
