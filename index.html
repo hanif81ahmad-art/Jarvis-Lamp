@@ -58,6 +58,20 @@
     footer{text-align:center;color:#777789;font-size:11px;margin-top:30px}
     @media(max-width:760px){header{margin-bottom:35px}.dashboard{grid-template-columns:1fr;gap:13px}.lamp-card{min-height:275px}.bulb-area{height:120px}.bottom{grid-template-columns:1fr}}
     @media(max-width:420px){.wrap{width:90%;padding-top:22px}.brand{font-size:18px}.live{font-size:10px}.key-row{flex-direction:column}.save{padding:12px}}
+  
+    .gesture-panel{margin-top:18px;background:linear-gradient(135deg,#a78bfa18,#62e8b018);border:1px solid #a78bfa45;border-radius:20px;padding:20px}
+    .gesture-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(230px,.9fr);gap:18px;align-items:start}
+    .camera-frame{position:relative;overflow:hidden;border-radius:15px;background:#090910;min-height:190px;aspect-ratio:16/9}
+    .camera-frame video{display:none}
+    .camera-frame canvas{display:block;width:100%;height:100%;object-fit:cover}
+    .gesture-controls{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+    .gesture-button{border:0;border-radius:12px;padding:11px 15px;background:var(--accent);color:#171321;font-weight:800;cursor:pointer}
+    .gesture-button.stop{background:#ffffff18;color:var(--text)}
+    .gesture-status{font-size:12px;color:#d5d2e2;line-height:1.6;margin-top:10px}
+    .gesture-guide{display:grid;gap:9px}
+    .gesture-guide .command{display:flex;justify-content:space-between;gap:10px}
+    @media(max-width:650px){.gesture-layout{grid-template-columns:1fr}}
+
   </style>
 </head>
 <body>
@@ -116,6 +130,35 @@
       </div>
     </section>
 
+
+    <section class="gesture-panel" aria-label="Kontrol lampu dengan gestur tangan">
+      <div class="voice-head">
+        <div>
+          <h2 style="font:600 16px 'Space Grotesk';margin:0 0 6px">✋ Kontrol dengan Gestur Tangan</h2>
+          <p class="hint" style="margin:0">Aktifkan kamera, lalu tunjukkan 1, 2, atau 3 jari di depan kamera.</p>
+        </div>
+      </div>
+      <div class="gesture-layout" style="margin-top:16px">
+        <div>
+          <div class="camera-frame">
+            <video id="gestureVideo" playsinline></video>
+            <canvas id="gestureCanvas" width="640" height="360"></canvas>
+          </div>
+          <div class="gesture-controls">
+            <button class="gesture-button" id="startGesture" type="button">Aktifkan kamera</button>
+            <button class="gesture-button stop" id="stopGesture" type="button" disabled>Matikan kamera</button>
+          </div>
+          <div class="gesture-status" id="gestureStatus" role="status" aria-live="polite">Kamera belum aktif.</div>
+        </div>
+        <div class="gesture-guide">
+          <div class="command"><span>☝️ 1 jari</span><b>Lampu 1 · Merah</b></div>
+          <div class="command"><span>✌️ 2 jari</span><b>Lampu 2 · Kuning</b></div>
+          <div class="command"><span>🤟 3 jari</span><b>Lampu 3 · Hijau</b></div>
+          <p class="hint">Tahan gestur sebentar agar terdeteksi stabil. Tangan terbuka dengan 0 atau lebih dari 3 jari tidak mengubah status lampu.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="bottom">
       <div class="panel">
         <h2>⌘ ThingSpeak connection</h2>
@@ -130,6 +173,11 @@
     </section>
     <footer>GLOWGRID UI · IoT LIGHT CONTROL · MADE FOR YOUR VIBE</footer>
   </main>
+
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
   <script>
     // ThingSpeak: Field 1 = lampu merah, Field 2 = kuning, Field 3 = hijau.
@@ -360,6 +408,143 @@
         });
       });
     }
+
+    // Gesture control menggunakan MediaPipe Hands.
+    const gestureVideo = document.getElementById('gestureVideo');
+    const gestureCanvas = document.getElementById('gestureCanvas');
+    const gestureCtx = gestureCanvas.getContext('2d');
+    const gestureStatus = document.getElementById('gestureStatus');
+    const startGestureButton = document.getElementById('startGesture');
+    const stopGestureButton = document.getElementById('stopGesture');
+    let gestureCamera = null;
+    let handsModel = null;
+    let gestureRunning = false;
+    let stableGesture = 0;
+    let stableFrames = 0;
+    let lastAppliedGesture = -1;
+    let processingGesture = false;
+
+    function countRaisedFingers(landmarks) {
+      // Landmark ujung dan sendi tiap jari; ibu jari sengaja tidak dihitung.
+      const fingerPairs = [
+        [8, 6],   // telunjuk
+        [12, 10], // tengah
+        [16, 14], // manis
+        [20, 18]  // kelingking
+      ];
+      return fingerPairs.reduce((count, pair) => {
+        const [tip, pip] = pair;
+        return count + (landmarks[tip].y < landmarks[pip].y - 0.02 ? 1 : 0);
+      }, 0);
+    }
+
+    async function handleHandResults(results) {
+      gestureCtx.save();
+      gestureCtx.clearRect(0, 0, gestureCanvas.width, gestureCanvas.height);
+      if (results.image) {
+        gestureCtx.drawImage(results.image, 0, 0, gestureCanvas.width, gestureCanvas.height);
+      }
+      let detected = -1;
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length) {
+        const landmarks = results.multiHandLandmarks[0];
+        if (window.drawConnectors && window.HAND_CONNECTIONS) {
+          drawConnectors(gestureCtx, landmarks, HAND_CONNECTIONS, {color:'#a78bfa', lineWidth:4});
+          drawLandmarks(gestureCtx, landmarks, {color:'#ffd34e', lineWidth:1, radius:3});
+        }
+        detected = countRaisedFingers(landmarks);
+      }
+      gestureCtx.restore();
+
+      if (detected >= 1 && detected <= 3) {
+        if (detected === stableGesture) stableFrames++;
+        else {
+          stableGesture = detected;
+          stableFrames = 1;
+        }
+        gestureStatus.textContent = `Terdeteksi ${detected} jari. Tahan sebentar… (${Math.min(stableFrames, 6)}/6)`;
+        if (stableFrames >= 6 && lastAppliedGesture !== detected && !processingGesture) {
+          const next = [false, false, false];
+          next[detected - 1] = true;
+          processingGesture = true;
+          gestureStatus.textContent = `${detected} jari terdeteksi. Mengirim perintah ke ThingSpeak…`;
+          const ok = await applyLights(next, `Gestur ${detected} jari`);
+          if (ok) {
+            lastAppliedGesture = detected;
+            gestureStatus.textContent = `Berhasil! Lampu ${detected} menyala melalui gestur tangan.`;
+          } else {
+            gestureStatus.textContent = 'Gestur terdeteksi, tetapi perintah gagal dikirim. Periksa API Key ThingSpeak.';
+          }
+          processingGesture = false;
+        }
+      } else {
+        stableGesture = -1;
+        stableFrames = 0;
+        if (detected === 0) gestureStatus.textContent = 'Kepalan/0 jari terdeteksi. Lampu tidak diubah.';
+        else gestureStatus.textContent = 'Arahkan tangan ke kamera dan tunjukkan 1, 2, atau 3 jari.';
+      }
+    }
+
+    startGestureButton.addEventListener('click', async () => {
+      if (gestureRunning) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        gestureStatus.textContent = 'Kamera memerlukan HTTPS atau localhost. Buka halaman melalui koneksi aman.';
+        return;
+      }
+      if (!window.Hands || !window.Camera) {
+        gestureStatus.textContent = 'Library deteksi gestur belum berhasil dimuat. Periksa koneksi internet lalu muat ulang halaman.';
+        return;
+      }
+      try {
+        gestureStatus.textContent = 'Meminta izin kamera…';
+        handsModel = new Hands({locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        handsModel.setOptions({
+          maxNumHands: 1,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.7,
+          minTrackingConfidence: 0.65
+        });
+        handsModel.onResults(handleHandResults);
+        gestureCamera = new Camera(gestureVideo, {
+          onFrame: async () => {
+            if (handsModel && gestureRunning) await handsModel.send({image: gestureVideo});
+          },
+          width: 640,
+          height: 360
+        });
+        gestureRunning = true;
+        await gestureCamera.start();
+        startGestureButton.disabled = true;
+        stopGestureButton.disabled = false;
+        gestureStatus.textContent = 'Kamera aktif. Tunjukkan 1, 2, atau 3 jari ke kamera.';
+      } catch (error) {
+        gestureRunning = false;
+        gestureStatus.textContent = `Tidak dapat mengaktifkan kamera: ${error.message || 'izin kamera ditolak'}.`;
+        startGestureButton.disabled = false;
+        stopGestureButton.disabled = true;
+      }
+    });
+
+    stopGestureButton.addEventListener('click', async () => {
+      gestureRunning = false;
+      if (gestureCamera) {
+        try { gestureCamera.stop(); } catch (_) {}
+        gestureCamera = null;
+      }
+      if (handsModel) {
+        try { await handsModel.close(); } catch (_) {}
+        handsModel = null;
+      }
+      const stream = gestureVideo.srcObject;
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      gestureVideo.srcObject = null;
+      gestureCtx.clearRect(0, 0, gestureCanvas.width, gestureCanvas.height);
+      startGestureButton.disabled = false;
+      stopGestureButton.disabled = true;
+      stableFrames = 0;
+      lastAppliedGesture = -1;
+      gestureStatus.textContent = 'Kamera dimatikan.';
+    });
+
   </script>
 </body>
 </html>
